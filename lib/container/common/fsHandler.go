@@ -18,7 +18,9 @@
 package common
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -48,6 +50,9 @@ type realFsHandler struct {
 	rootfs     string
 	extraDir   string
 	fsInfo     fs.FsInfo
+	// Whether the last update failed only because the directories no
+	// longer exist. Only accessed by the trackUsage goroutine.
+	dirsVanished bool
 	// Tells the container to stop.
 	stopChan chan struct{}
 }
@@ -108,24 +113,56 @@ func (fh *realFsHandler) update() error {
 
 	// Combine errors into a single error to return
 	if rootErr != nil || extraErr != nil {
-		return fmt.Errorf("rootDiskErr: %v, extraDiskErr: %v", rootErr, extraErr)
+		return &usageError{rootErr: rootErr, extraErr: extraErr}
 	}
 	return nil
+}
+
+// usageError combines the errors from measuring the root and extra directories.
+type usageError struct {
+	rootErr, extraErr error
+}
+
+func (e *usageError) Error() string {
+	return fmt.Sprintf("rootDiskErr: %v, extraDiskErr: %v", e.rootErr, e.extraErr)
+}
+
+// notExist reports whether every failure was a directory that does not exist.
+func (e *usageError) notExist() bool {
+	return (e.rootErr == nil || errors.Is(e.rootErr, os.ErrNotExist)) &&
+		(e.extraErr == nil || errors.Is(e.extraErr, os.ErrNotExist))
+}
+
+// updateAndBackoff runs one update and sets the period until the next one.
+func (fh *realFsHandler) updateAndBackoff() {
+	err := fh.update()
+	if err == nil {
+		fh.dirsVanished = false
+		fh.period = fh.minPeriod
+		return
+	}
+	var usageErr *usageError
+	vanished := errors.As(err, &usageErr) && usageErr.notExist()
+	if vanished && !fh.dirsVanished {
+		// The runtime can remove a container's directories before the
+		// handler is stopped. That is expected once; if it is still the
+		// case at the next update, the handler was never stopped.
+		klog.V(4).Infof("container directories no longer exist, skipping filesystem stats - %v", err)
+	} else {
+		klog.Errorf("failed to collect filesystem stats - %v", err)
+	}
+	fh.dirsVanished = vanished
+	fh.period = fh.period * 2
+	if fh.period > maxBackoffFactor*fh.minPeriod {
+		fh.period = maxBackoffFactor * fh.minPeriod
+	}
 }
 
 func (fh *realFsHandler) trackUsage() {
 	longOp := time.Second
 	for {
 		start := time.Now()
-		if err := fh.update(); err != nil {
-			klog.Errorf("failed to collect filesystem stats - %v", err)
-			fh.period = fh.period * 2
-			if fh.period > maxBackoffFactor*fh.minPeriod {
-				fh.period = maxBackoffFactor * fh.minPeriod
-			}
-		} else {
-			fh.period = fh.minPeriod
-		}
+		fh.updateAndBackoff()
 		duration := time.Since(start)
 		if duration > longOp {
 			// adapt longOp time so that message doesn't continue to print
