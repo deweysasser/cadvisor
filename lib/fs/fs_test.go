@@ -19,6 +19,7 @@ package fs
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -234,6 +235,13 @@ func TestDirInodeUsage(t *testing.T) {
 	as.NoError(err)
 	// We should get numFiles+1 inodes, since we get 1 inode for each file, plus 1 for the directory
 	as.True(uint64(numFiles+1) == usage.Inodes, "expected inodes in dir to be %d; got inodes: %d", numFiles+1, usage.Inodes)
+}
+
+func TestDirUsageNotExist(t *testing.T) {
+	fsInfo, err := NewFsInfo(Context{})
+	require.NoError(t, err)
+	_, err = fsInfo.GetDirUsage(filepath.Join(t.TempDir(), "missing"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestAddSystemRootLabel(t *testing.T) {

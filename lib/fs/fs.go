@@ -618,7 +618,7 @@ func GetDirUsage(dir string) (UsageInfo, error) {
 
 	rootInfo, err := os.Stat(dir)
 	if err != nil {
-		return usage, fmt.Errorf("could not stat %q to get inode usage: %v", dir, err)
+		return usage, fmt.Errorf("could not stat %q to get inode usage: %w", dir, err)
 	}
 
 	rootStat, ok := rootInfo.Sys().(*syscall.Stat_t)
