@@ -297,7 +297,15 @@ func (c *containerMap) Range(f func(name namespacedContainerName, data *containe
 }
 
 type manager struct {
-	containers                containerMap
+	containers containerMap
+	// lifecycleMu serializes createContainer and destroyContainer. Reads of
+	// containers stay lock-free (sync.Map); only lifecycle changes take this.
+	// Without it, racing creates of one container (watch event, global
+	// housekeeping, on-demand lookup) each start a containerData and all but
+	// the last are overwritten in the map, so destroyContainer can never stop
+	// them; and a destroy landing inside a create leaves orphaned alias
+	// entries and a container started after it was stopped (#3924).
+	lifecycleMu               sync.Mutex
 	memoryCache               *memory.InMemoryCache
 	fsInfo                    fs.FsInfo
 	sysFs                     sysfs.SysFs
@@ -821,6 +829,9 @@ func (m *manager) GetVersionInfo() (*info.VersionInfo, error) {
 
 // Create a container.
 func (m *manager) createContainer(containerName string, watchSource watcher.ContainerWatchSource) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	namespacedName := namespacedContainerName{
 		Name: containerName,
 	}
@@ -922,6 +933,9 @@ func (m *manager) createContainer(containerName string, watchSource watcher.Cont
 }
 
 func (m *manager) destroyContainer(containerName string) error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	namespacedName := namespacedContainerName{
 		Name: containerName,
 	}
